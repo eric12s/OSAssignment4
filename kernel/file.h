@@ -27,7 +27,7 @@ struct inode {
   short nlink;
   uint size;
   uint addrs[NDIRECT+2];
-  char symlink;
+  // char symlink;
 };
 
 #define MAX_DEREFERENCE 31

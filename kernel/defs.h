@@ -185,4 +185,4 @@ void            virtio_disk_intr(void);
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
 
-int             readlink(char * pathname, char * buf, int bufsize);
+int             readlink(char * pathname, uint64 address, int bufsize);

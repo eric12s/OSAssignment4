@@ -23,15 +23,12 @@ exec(char *path, char **argv)
 
   begin_op();
 
-  if (readlink(path, pathname, 64) == 0 && (ip = namei(pathname)) == 0) { // TODO: There is a little change in the if-else logic here
-    end_op();
-    printf("read link exec: fail \n");
-    return -1;
-  } else if ((ip = namei(path)) == 0) {
+ if ((ip = namei(path)) == 0) {
     end_op();
     printf("hard exec: fail \n");
     return -1;
   }
+  
   ilock(ip);
 
   // Check ELF header

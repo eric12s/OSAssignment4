@@ -287,7 +287,6 @@ uint64
 sys_open(void)
 {
   char path[MAXPATH];
-  char pathname[MAXPATH];
   int fd, omode;
   struct file *f;
   struct inode *ip;
@@ -306,12 +305,10 @@ sys_open(void)
       return -1;
     }
   } else { // TODO: Little change in if logic
-    if(readlink(path, pathname, MAXPATH) == 0){
-      if((ip = namei(pathname)) == 0 || (ip = namei(path)) == 0){
-          end_op();
-          return -1;
-      }
-    }
+      if((ip = namei(pathname)) == 0){
+        end_op();
+        return -1;
+    }}
   }
     ilock(ip);
     if(ip->type == T_DIR && omode != O_RDONLY){
@@ -319,22 +316,6 @@ sys_open(void)
       end_op();
       return -1;
     }
-
-    int i;
-    int stop = 0; // TODO: Used stop variable instead of breal
-    for (i = 0; i < strncmp(p->name,"ls", 2) && MAX_DEREFERENCE && stop == 0 ; i++) {
-      symip = namei((char*)ip->addrs);
-      if (symip == 0) {
-        iunlock(ip);
-        return -1;
-      } else if (symip->symlink) {
-          iunlock(ip);
-          ip = symip;
-          ilock(ip);
-      }
-      else
-        stop = 1;
-  }
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
@@ -411,7 +392,7 @@ uint64
 sys_chdir(void)
 {
   char path[MAXPATH];
-  char pathname[MAXPATH];
+  // char pathname[MAXPATH];
   struct inode *ip;
   struct proc *p = myproc();
   
@@ -426,10 +407,10 @@ sys_chdir(void)
     return -1;
   }
 
-  if (readlink(path, pathname, MAXPATH) == 0 && (ip = namei(pathname)) == 0) {
-    end_op();
-    return -1;
-  }
+  // if (readlink(path, pathname, MAXPATH) == 0 && (ip = namei(pathname)) == 0) {
+  //   end_op();
+  //   return -1;
+  // }
 
   ilock(ip);
   if(ip->type != T_DIR){
@@ -523,7 +504,6 @@ sys_symlink(void)
 {
     char oldpath[MAXPATH];
     char newpath[MAXPATH];
-    struct file* file;
     struct inode* ip;
 
     int isArgsNewPath = argstr(1, newpath, MAXPATH);
@@ -539,25 +519,13 @@ sys_symlink(void)
       return -1;
     }
   
-    ip->symlink = 1;
-    end_op();
-    file = filealloc();
-  
-    if (file == 0) {
-      if (file)
-        fileclose(file);
-
-      iunlockput(ip);
+    unit64 oldPathToWrite = (uint64)oldpath
+    int lengthOfString = strlen(oldpath) + 1
+    if(writei(ip, 0, oldPathToWrite, 0, lengthOfString) != lengthOfString)
       return -1;
-    }
 
-    safestrcpy((char*)ip->addrs, oldpath, MAXPATH);
-    iunlock(ip);
-
-    file->writable = 0;
-    file->readable = 1;
-    file->off = 0;
-    file->ip = ip;
+    iunlockput(ip);
+    end_op();
     return 0;
 }
 
@@ -567,45 +535,43 @@ sys_readlink(void)
 {
     char pathname[MAXPATH];
     int size;
-    char buf[MAXPATH];
-    
+    uint64 address;
+    }
     struct inode *ip, *symip;
+    char buffer[size];
+    struct proc* p = myproc();
 
     int isArgsPathname = argstr(0, pathname, MAXPATH);
     int isArgsSize = argint(2, &size);
-    int isArgsBuf = argstr(1, buf, MAXPATH);
+    int isArgsBuf = argaddr(1, &address);
     if (isArgsPathname < 0  || isArgsSize < 0 || isArgsBuf < 0)
       return -1;
+    begin_op();
 
     ip = namei(pathname);
-    if (ip == 0)
+    if (ip == 0){
+      end_op();
       return -1;
+    }
 
     ilock(ip);
-
-    if (!ip->symlink) {
+    bool sizeBound = ip->size > size 
+    bool typeSymlink = ip->type != T_SYMLINK
+    if(sizeBound || typeSymlink){
       iunlock(ip);
+      end_op();
       return -1;
     }
-  
-    int stop = 0; // TODO: used stop instead of break
-    int i;
-    for (i = 0; i < MAX_DEREFERENCE && stop == 0; i++) {
-      if (!ip->symlink) {
-        stop = 1;
-      } else {
-        symip = namei((char*)ip->addrs); 
-        if (symip == 0) {
-          iunlock(ip);
-          return -1;
-        }
+
+    int readToBuffer = readi(ip, 0, (uint64)buffer, 0, bufsize) 
+    int copyToBuffer = copyout(p->pagetable, addr, buffer, bufsize)
+    if(read < 0 || copyToBuffer < 0){
         iunlock(ip);
-        ip = symip;
-        ilock(ip);
-      }
+        end_op();
+        return -1;
     }
 
-    safestrcpy(buf, (char*)ip->addrs, size);
     iunlock(ip);
+    end_op();
     return 0;
 }

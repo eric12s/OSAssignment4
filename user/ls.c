@@ -3,7 +3,7 @@
 #include "user/user.h"
 #include "kernel/fs.h"
 #include "kernel/param.h"
-#include <string.h>
+// #include <string.h>
 
 char*
 fmtname(char *path)
