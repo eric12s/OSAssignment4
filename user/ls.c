@@ -45,12 +45,12 @@ ls(char *path)
 
   switch(st.type){
   case T_FILE:
-    printf("%s %d %d %l\n", fmtname(path, 0), st.type, st.ino, st.size);
+    printf("%s %d %d %l\n", fmtname(path), st.type, st.ino, st.size);
     break;
 
   case T_SYMLINK:
     readlink(path, buf, 512);
-    printf("%s %d %d %l\n", fmtname(path, 1), st.type, st.ino, st.size);
+    printf("%s %d %d %l\n", fmtname(path), st.type, st.ino, st.size);
     break;
 
   case T_DIR:
@@ -76,7 +76,7 @@ ls(char *path)
         printf("%s %s %d %d %d\n", fmtname(buf), tar, st.type, st.ino, st.size); // TODO: He had '->.' after the first '%s' instead of space
       }
       else {
-        printf("%s %d %d %d\n", fmtname(buf, 0), st.type, st.ino, st.size);
+        printf("%s %d %d %d\n", fmtname(buf), st.type, st.ino, st.size);
       }
     }
     break;

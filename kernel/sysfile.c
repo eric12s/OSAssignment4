@@ -291,6 +291,7 @@ sys_open(void)
   struct file *f;
   struct inode *ip;
   struct inode *symip;
+  struct proc* proc = myproc();
   int n;
 
   if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
@@ -298,24 +299,37 @@ sys_open(void)
 
   begin_op();
 
-  if(omode & O_CREATE){
+  if(omode & O_CREATE) {
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
       end_op();
       return -1;
     }
-  } else { // TODO: Little change in if logic
-      if((ip = namei(pathname)) == 0){
-        end_op();
-        return -1;
-    }}
+  } else if ((ip = namei(path)) == 0) { // TODO: Little change in if logic    
+    end_op(); 
+    return -1;
   }
-    ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
-      iunlockput(ip);
-      end_op();
+  ilock(ip);
+  if(ip->type == T_DIR && omode != O_RDONLY){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  int i;
+  for (i = 0; i < MAX_DEREFERENCE && strncmp(proc->name,"ls", 2); i++) {
+    if ((symip = namei((char*)ip->addrs)) == 0) {
+      iunlock(ip);
       return -1;
     }
+    if (ip->type != T_SYMLINK) {
+      break;
+    }
+
+    iunlock(ip);
+    ip = symip;
+    ilock(ip);
+  }
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
@@ -519,8 +533,8 @@ sys_symlink(void)
       return -1;
     }
   
-    unit64 oldPathToWrite = (uint64)oldpath
-    int lengthOfString = strlen(oldpath) + 1
+    uint64 oldPathToWrite = (uint64)oldpath;
+    int lengthOfString = strlen(oldpath) + 1;
     if(writei(ip, 0, oldPathToWrite, 0, lengthOfString) != lengthOfString)
       return -1;
 
@@ -536,18 +550,18 @@ sys_readlink(void)
     char pathname[MAXPATH];
     int size;
     uint64 address;
-    }
+
     struct inode *ip, *symip;
-    char buffer[size];
     struct proc* p = myproc();
 
     int isArgsPathname = argstr(0, pathname, MAXPATH);
     int isArgsSize = argint(2, &size);
-    int isArgsBuf = argaddr(1, &address);
-    if (isArgsPathname < 0  || isArgsSize < 0 || isArgsBuf < 0)
+    int isArgsAddress = argaddr(1, &address);
+    if (isArgsPathname < 0  || isArgsSize < 0 || isArgsAddress < 0)
       return -1;
     begin_op();
 
+    char buffer[size];
     ip = namei(pathname);
     if (ip == 0){
       end_op();
@@ -555,17 +569,34 @@ sys_readlink(void)
     }
 
     ilock(ip);
-    bool sizeBound = ip->size > size 
-    bool typeSymlink = ip->type != T_SYMLINK
-    if(sizeBound || typeSymlink){
+    int sizeBound = ip->size > size;
+    int typeSymlink = ip->type != T_SYMLINK;
+    if(sizeBound || typeSymlink) {
       iunlock(ip);
       end_op();
       return -1;
     }
 
-    int readToBuffer = readi(ip, 0, (uint64)buffer, 0, bufsize) 
-    int copyToBuffer = copyout(p->pagetable, addr, buffer, bufsize)
-    if(read < 0 || copyToBuffer < 0){
+    int i;
+    for (i = 0; i < MAX_DEREFERENCE; i++) {
+      if (ip->type != T_SYMLINK) {
+        break;
+      }
+
+      symip = namei((char*)ip->addrs);
+      if (symip  == 0) {
+        iunlock(ip);
+        end_op();
+        return -1;
+      }
+      iunlock(ip);
+      ip = symip;
+      ilock(ip);
+    }
+
+    int readToBuffer = readi(ip, 0, (uint64)buffer, 0, size);
+    int copyToBuffer = copyout(p->pagetable, address, buffer, size);
+    if(readToBuffer < 0 || copyToBuffer < 0){
         iunlock(ip);
         end_op();
         return -1;
