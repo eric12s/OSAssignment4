@@ -73,7 +73,7 @@ ls(char *path)
       if (st.type == T_SYMLINK) {
         char tar[256];
         readlink(buf, tar, 256);
-        printf("%s %s %d %d %d\n", fmtname(buf), tar, st.type, st.ino, st.size); // TODO: He had '->.' after the first '%s' instead of space
+        printf("%s->%s %d %d %d\n", fmtname(buf), tar, st.type, st.ino, st.size);
       }
       else {
         printf("%s %d %d %d\n", fmtname(buf), st.type, st.ino, st.size);
