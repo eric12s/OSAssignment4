@@ -377,8 +377,8 @@ iunlockput(struct inode *ip)
 static uint
 bmap(struct inode *ip, uint bn)
 {
-  uint addr, *a, *a2;
-  struct buf *bp, *bp2;
+  uint addr, *a;
+  struct buf *bp;
   uint position;
   int checkAddr;
 

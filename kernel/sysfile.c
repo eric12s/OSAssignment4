@@ -310,7 +310,7 @@ sys_open(void)
   }
   ilock(ip);
 
-  if (strncmp(p->name, "ls", 2) && ip->type == T_SYMLINK && (ip = link_dereference(ip, path))) {
+  if (strncmp(proc->name, "ls", 2) && ip->type == T_SYMLINK && (ip = link_dereference(ip, path))) {
       end_op();
       return -1;
   }
@@ -320,21 +320,6 @@ sys_open(void)
     end_op();
     return -1;
   }
-
-  // int i;
-  // for (i = 0; i < MAX_DEREFERENCE && strncmp(proc->name,"ls", 2); i++) {
-  //   if ((symip = namei((char*)ip->addrs)) == 0) {
-  //     iunlock(ip);
-  //     return -1;
-  //   }
-  //   if (ip->type != T_SYMLINK) {
-  //     break;
-  //   }
-
-  //   iunlock(ip);
-  //   ip = symip;
-  //   ilock(ip);
-  // }
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
@@ -428,13 +413,13 @@ sys_chdir(void)
 
   ilock(ip);
 
-  if(ip->type != T_DI && ip->type != T_SYMLINKR){
-    iunlockput(ip);
+  if(ip->type == T_SYMLINK && ((ip = link_dereference(ip, path)) == 0)) {
     end_op();
     return -1;
   }
 
-  if(ip->type == T_SYMLINK && ((ip = link_dereference(ip, path)) == 0)) {
+  if(ip->type != T_DIR){
+    iunlockput(ip);
     end_op();
     return -1;
   }
@@ -541,6 +526,7 @@ sys_symlink(void)
     char oldpath[MAXPATH];
     char newpath[MAXPATH];
     struct inode* ip;
+    char dirs[DIRSIZ];
 
     int isArgsNewPath = argstr(1, newpath, MAXPATH);
     int isArgsOldPath = argstr(0, oldpath, MAXPATH);
@@ -549,6 +535,22 @@ sys_symlink(void)
 
     begin_op();
 
+    struct inode *d = nameiparent(newpath, dirs);
+    if (d == 0) {
+      end_op();
+      return -1;
+    }
+    ilock(d);
+
+    uint p;
+    ip = dirlookup(d, dirs, &p);
+    if (ip != 0) {
+        iunlock(d);
+        end_op();
+        return -1;
+    }
+    iunlock(d);
+  
     ip = create(newpath, T_SYMLINK, 0, 0);
     if (ip == 0) {
       end_op();
