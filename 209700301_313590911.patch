@@ -1,0 +1,994 @@
+diff --git a/Makefile b/Makefile
+index 328f9c6..6e1a78b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -132,6 +132,8 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_sanity\
++	# $U/_sym_test\
+ 
+ fs.img: mkfs/mkfs README $(UPROGS)
+ 	mkfs/mkfs fs.img README $(UPROGS)
+diff --git a/kernel/defs.h b/kernel/defs.h
+index 3564db4..fdee979 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -184,3 +184,4 @@ void            virtio_disk_intr(void);
+ 
+ // number of elements in fixed-size array
+ #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
++struct inode*   dereference(struct inode* ip, char* buff);
+\ No newline at end of file
+diff --git a/kernel/exec.c b/kernel/exec.c
+index d62d29d..60257ed 100644
+--- a/kernel/exec.c
++++ b/kernel/exec.c
+@@ -23,10 +23,12 @@ exec(char *path, char **argv)
+ 
+   begin_op();
+ 
+-  if((ip = namei(path)) == 0){
++ if ((ip = namei(path)) == 0) {
+     end_op();
++    printf("hard exec: fail \n");
+     return -1;
+   }
++  
+   ilock(ip);
+ 
+   // Check ELF header
+diff --git a/kernel/file.h b/kernel/file.h
+index b076d1d..7ce8827 100644
+--- a/kernel/file.h
++++ b/kernel/file.h
+@@ -26,9 +26,11 @@ struct inode {
+   short minor;
+   short nlink;
+   uint size;
+-  uint addrs[NDIRECT+1];
++  uint addrs[NDIRECT+2];
+ };
+ 
++#define MAX_DEREFERENCE 31
++
+ // map major device number to device functions.
+ struct devsw {
+   int (*read)(int, uint64, int);
+@@ -37,4 +39,4 @@ struct devsw {
+ 
+ extern struct devsw devsw[];
+ 
+-#define CONSOLE 1
++#define CONSOLE 1
+\ No newline at end of file
+diff --git a/kernel/fs.c b/kernel/fs.c
+index 40c9bd4..436a6c8 100644
+--- a/kernel/fs.c
++++ b/kernel/fs.c
+@@ -379,6 +379,8 @@ bmap(struct inode *ip, uint bn)
+ {
+   uint addr, *a;
+   struct buf *bp;
++  uint position;
++  int checkAddr;
+ 
+   if(bn < NDIRECT){
+     if((addr = ip->addrs[bn]) == 0)
+@@ -388,7 +390,6 @@ bmap(struct inode *ip, uint bn)
+   bn -= NDIRECT;
+ 
+   if(bn < NINDIRECT){
+-    // Load indirect block, allocating if necessary.
+     if((addr = ip->addrs[NDIRECT]) == 0)
+       ip->addrs[NDIRECT] = addr = balloc(ip->dev);
+     bp = bread(ip->dev, addr);
+@@ -401,6 +402,38 @@ bmap(struct inode *ip, uint bn)
+     return addr;
+   }
+ 
++  if (bn -= NINDIRECT < DINDIRECT) {
++    addr = ip->addrs[NDIRECT + 1];
++
++    if (addr == 0) {
++        addr = balloc(ip->dev);
++        ip->addrs[NDIRECT + 1] = addr;
++    }
++
++    bp = bread(ip->dev, addr);
++    a = (uint*)bp->data;
++    addr = a[bn / NINDIRECT];
++    
++    if (addr == 0) {
++        addr = balloc(ip->dev);
++        a[bn / NINDIRECT] = addr;
++        log_write(bp);
++    }
++
++    brelse(bp);
++    bp = bread(ip->dev, addr);
++    a = (uint*)bp->data;
++    position = bn - (uint)(bn/NINDIRECT) * NINDIRECT;
++    checkAddr = addr = a[position];
++    if(checkAddr == 0){
++        a[position] = addr = balloc(ip->dev);
++        log_write(bp);
++    }
++
++    brelse(bp);
++    return addr;
++  }
++
+   panic("bmap: out of range");
+ }
+ 
+diff --git a/kernel/fs.h b/kernel/fs.h
+index 139dcc9..07b9bdd 100644
+--- a/kernel/fs.h
++++ b/kernel/fs.h
+@@ -26,7 +26,8 @@ struct superblock {
+ 
+ #define NDIRECT 12
+ #define NINDIRECT (BSIZE / sizeof(uint))
+-#define MAXFILE (NDIRECT + NINDIRECT)
++#define DINDIRECT NINDIRECT * NINDIRECT
++#define MAXFILE (NDIRECT + NINDIRECT + DINDIRECT)
+ 
+ // On-disk inode structure
+ struct dinode {
+@@ -35,7 +36,8 @@ struct dinode {
+   short minor;          // Minor device number (T_DEVICE only)
+   short nlink;          // Number of links to inode in file system
+   uint size;            // Size of file (bytes)
+-  uint addrs[NDIRECT+1];   // Data block addresses
++  uint addrs[NDIRECT+2];   // Data block addresses
++  uchar padding[60];
+ };
+ 
+ // Inodes per block.
+diff --git a/kernel/param.h b/kernel/param.h
+index b5fdcb2..621f0bf 100644
+--- a/kernel/param.h
++++ b/kernel/param.h
+@@ -9,5 +9,5 @@
+ #define MAXOPBLOCKS  10  // max # of blocks any FS op writes
+ #define LOGSIZE      (MAXOPBLOCKS*3)  // max data blocks in on-disk log
+ #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
+-#define FSSIZE       1000  // size of file system in blocks
++#define FSSIZE       128 * 1024  // size of file system in blocks
+ #define MAXPATH      128   // maximum file path name
+diff --git a/kernel/stat.h b/kernel/stat.h
+index 19543af..aa7f9fe 100644
+--- a/kernel/stat.h
++++ b/kernel/stat.h
+@@ -1,6 +1,7 @@
+ #define T_DIR     1   // Directory
+ #define T_FILE    2   // File
+ #define T_DEVICE  3   // Device
++#define T_SYMLINK  4  
+ 
+ struct stat {
+   int dev;     // File system's disk device
+@@ -8,4 +9,5 @@ struct stat {
+   short type;  // Type of file
+   short nlink; // Number of links to file
+   uint64 size; // Size of file in bytes
++  char symlink; 
+ };
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index c1b3670..a9869e2 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -104,6 +104,8 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_wait(void);
+ extern uint64 sys_write(void);
+ extern uint64 sys_uptime(void);
++extern uint64 sys_symlink(void);
++extern uint64 sys_readlink(void);
+ 
+ static uint64 (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -127,8 +129,9 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_symlink]    sys_symlink,
++[SYS_readlink]    sys_readlink,
+ };
+-
+ void
+ syscall(void)
+ {
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..ac0dcf3 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,5 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_symlink  22
++#define SYS_readlink  23
+\ No newline at end of file
+diff --git a/kernel/sysfile.c b/kernel/sysfile.c
+index 5dc453b..298ef68 100644
+--- a/kernel/sysfile.c
++++ b/kernel/sysfile.c
+@@ -24,13 +24,13 @@ argfd(int n, int *pfd, struct file **pf)
+   int fd;
+   struct file *f;
+ 
+-  if(argint(n, &fd) < 0)
++  if (argint(n, &fd) < 0)
+     return -1;
+-  if(fd < 0 || fd >= NOFILE || (f=myproc()->ofile[fd]) == 0)
++  if (fd < 0 || fd >= NOFILE || (f = myproc()->ofile[fd]) == 0)
+     return -1;
+-  if(pfd)
++  if (pfd)
+     *pfd = fd;
+-  if(pf)
++  if (pf)
+     *pf = f;
+   return 0;
+ }
+@@ -43,8 +43,10 @@ fdalloc(struct file *f)
+   int fd;
+   struct proc *p = myproc();
+ 
+-  for(fd = 0; fd < NOFILE; fd++){
+-    if(p->ofile[fd] == 0){
++  for (fd = 0; fd < NOFILE; fd++)
++  {
++    if (p->ofile[fd] == 0)
++    {
+       p->ofile[fd] = f;
+       return fd;
+     }
+@@ -58,9 +60,9 @@ sys_dup(void)
+   struct file *f;
+   int fd;
+ 
+-  if(argfd(0, 0, &f) < 0)
++  if (argfd(0, 0, &f) < 0)
+     return -1;
+-  if((fd=fdalloc(f)) < 0)
++  if ((fd = fdalloc(f)) < 0)
+     return -1;
+   filedup(f);
+   return fd;
+@@ -73,7 +75,7 @@ sys_read(void)
+   int n;
+   uint64 p;
+ 
+-  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
++  if (argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
+     return -1;
+   return fileread(f, p, n);
+ }
+@@ -85,7 +87,7 @@ sys_write(void)
+   int n;
+   uint64 p;
+ 
+-  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
++  if (argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
+     return -1;
+ 
+   return filewrite(f, p, n);
+@@ -97,7 +99,7 @@ sys_close(void)
+   int fd;
+   struct file *f;
+ 
+-  if(argfd(0, &fd, &f) < 0)
++  if (argfd(0, &fd, &f) < 0)
+     return -1;
+   myproc()->ofile[fd] = 0;
+   fileclose(f);
+@@ -110,7 +112,7 @@ sys_fstat(void)
+   struct file *f;
+   uint64 st; // user pointer to struct stat
+ 
+-  if(argfd(0, 0, &f) < 0 || argaddr(1, &st) < 0)
++  if (argfd(0, 0, &f) < 0 || argaddr(1, &st) < 0)
+     return -1;
+   return filestat(f, st);
+ }
+@@ -122,17 +124,19 @@ sys_link(void)
+   char name[DIRSIZ], new[MAXPATH], old[MAXPATH];
+   struct inode *dp, *ip;
+ 
+-  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
++  if (argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+     return -1;
+ 
+   begin_op();
+-  if((ip = namei(old)) == 0){
++  if ((ip = namei(old)) == 0)
++  {
+     end_op();
+     return -1;
+   }
+ 
+   ilock(ip);
+-  if(ip->type == T_DIR){
++  if (ip->type == T_DIR)
++  {
+     iunlockput(ip);
+     end_op();
+     return -1;
+@@ -142,10 +146,11 @@ sys_link(void)
+   iupdate(ip);
+   iunlock(ip);
+ 
+-  if((dp = nameiparent(new, name)) == 0)
++  if ((dp = nameiparent(new, name)) == 0)
+     goto bad;
+   ilock(dp);
+-  if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
++  if (dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0)
++  {
+     iunlockput(dp);
+     goto bad;
+   }
+@@ -172,10 +177,11 @@ isdirempty(struct inode *dp)
+   int off;
+   struct dirent de;
+ 
+-  for(off=2*sizeof(de); off<dp->size; off+=sizeof(de)){
+-    if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
++  for (off = 2 * sizeof(de); off < dp->size; off += sizeof(de))
++  {
++    if (readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
+       panic("isdirempty: readi");
+-    if(de.inum != 0)
++    if (de.inum != 0)
+       return 0;
+   }
+   return 1;
+@@ -189,11 +195,12 @@ sys_unlink(void)
+   char name[DIRSIZ], path[MAXPATH];
+   uint off;
+ 
+-  if(argstr(0, path, MAXPATH) < 0)
++  if (argstr(0, path, MAXPATH) < 0)
+     return -1;
+ 
+   begin_op();
+-  if((dp = nameiparent(path, name)) == 0){
++  if ((dp = nameiparent(path, name)) == 0)
++  {
+     end_op();
+     return -1;
+   }
+@@ -201,24 +208,26 @@ sys_unlink(void)
+   ilock(dp);
+ 
+   // Cannot unlink "." or "..".
+-  if(namecmp(name, ".") == 0 || namecmp(name, "..") == 0)
++  if (namecmp(name, ".") == 0 || namecmp(name, "..") == 0)
+     goto bad;
+ 
+-  if((ip = dirlookup(dp, name, &off)) == 0)
++  if ((ip = dirlookup(dp, name, &off)) == 0)
+     goto bad;
+   ilock(ip);
+ 
+-  if(ip->nlink < 1)
++  if (ip->nlink < 1)
+     panic("unlink: nlink < 1");
+-  if(ip->type == T_DIR && !isdirempty(ip)){
++  if (ip->type == T_DIR && !isdirempty(ip))
++  {
+     iunlockput(ip);
+     goto bad;
+   }
+ 
+   memset(&de, 0, sizeof(de));
+-  if(writei(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
++  if (writei(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
+     panic("unlink: writei");
+-  if(ip->type == T_DIR){
++  if (ip->type == T_DIR)
++  {
+     dp->nlink--;
+     iupdate(dp);
+   }
+@@ -238,27 +247,28 @@ bad:
+   return -1;
+ }
+ 
+-static struct inode*
++static struct inode *
+ create(char *path, short type, short major, short minor)
+ {
+   struct inode *ip, *dp;
+   char name[DIRSIZ];
+ 
+-  if((dp = nameiparent(path, name)) == 0)
++  if ((dp = nameiparent(path, name)) == 0)
+     return 0;
+ 
+   ilock(dp);
+ 
+-  if((ip = dirlookup(dp, name, 0)) != 0){
++  if ((ip = dirlookup(dp, name, 0)) != 0)
++  {
+     iunlockput(dp);
+     ilock(ip);
+-    if(type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE))
++    if (type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE))
+       return ip;
+     iunlockput(ip);
+     return 0;
+   }
+ 
+-  if((ip = ialloc(dp->dev, type)) == 0)
++  if ((ip = ialloc(dp->dev, type)) == 0)
+     panic("create: ialloc");
+ 
+   ilock(ip);
+@@ -267,15 +277,16 @@ create(char *path, short type, short major, short minor)
+   ip->nlink = 1;
+   iupdate(ip);
+ 
+-  if(type == T_DIR){  // Create . and .. entries.
+-    dp->nlink++;  // for ".."
++  if (type == T_DIR)
++  {              // Create . and .. entries.
++    dp->nlink++; // for ".."
+     iupdate(dp);
+     // No ip->nlink++ for ".": avoid cyclic ref count.
+-    if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
++    if (dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
+       panic("create dots");
+   }
+ 
+-  if(dirlink(dp, name, ip->inum) < 0)
++  if (dirlink(dp, name, ip->inum) < 0)
+     panic("create: dirlink");
+ 
+   iunlockput(dp);
+@@ -290,58 +301,78 @@ sys_open(void)
+   int fd, omode;
+   struct file *f;
+   struct inode *ip;
++  struct proc *proc = myproc();
+   int n;
+ 
+-  if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
++  if ((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
+     return -1;
+ 
+   begin_op();
+ 
+-  if(omode & O_CREATE){
++  if (omode & O_CREATE)
++  {
+     ip = create(path, T_FILE, 0, 0);
+-    if(ip == 0){
++    if (ip == 0)
++    {
+       end_op();
+       return -1;
+     }
+-  } else {
+-    if((ip = namei(path)) == 0){
++  }
++  else if ((ip = namei(path)) == 0)
++  {
++    end_op();
++    return -1;
++  }
++  else
++  {
++    ilock(ip);
++    int cmp = strncmp(proc->name, "ls", 2);
++    if (ip->type == T_SYMLINK && cmp && (ip = dereference(ip, path)) == 0)
++    {
+       end_op();
+       return -1;
+     }
+-    ilock(ip);
+-    if(ip->type == T_DIR && omode != O_RDONLY){
++    else if (ip->type == T_DIR && omode != O_RDONLY)
++    {
+       iunlockput(ip);
+       end_op();
+       return -1;
+     }
+   }
+ 
+-  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
++  if (ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV))
++  {
+     iunlockput(ip);
+     end_op();
+     return -1;
+   }
+ 
+-  if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+-    if(f)
++  if ((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0)
++  {
++    if (f)
+       fileclose(f);
+     iunlockput(ip);
+     end_op();
+     return -1;
+   }
+ 
+-  if(ip->type == T_DEVICE){
++  if (ip->type == T_DEVICE)
++  {
+     f->type = FD_DEVICE;
+     f->major = ip->major;
+-  } else {
++  }
++  else
++  {
+     f->type = FD_INODE;
+     f->off = 0;
+   }
++
+   f->ip = ip;
+   f->readable = !(omode & O_WRONLY);
+   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+ 
+-  if((omode & O_TRUNC) && ip->type == T_FILE){
++  if ((omode & O_TRUNC) && ip->type == T_FILE)
++  {
+     itrunc(ip);
+   }
+ 
+@@ -358,7 +389,8 @@ sys_mkdir(void)
+   struct inode *ip;
+ 
+   begin_op();
+-  if(argstr(0, path, MAXPATH) < 0 || (ip = create(path, T_DIR, 0, 0)) == 0){
++  if (argstr(0, path, MAXPATH) < 0 || (ip = create(path, T_DIR, 0, 0)) == 0)
++  {
+     end_op();
+     return -1;
+   }
+@@ -375,10 +407,11 @@ sys_mknod(void)
+   int major, minor;
+ 
+   begin_op();
+-  if((argstr(0, path, MAXPATH)) < 0 ||
+-     argint(1, &major) < 0 ||
+-     argint(2, &minor) < 0 ||
+-     (ip = create(path, T_DEVICE, major, minor)) == 0){
++  if ((argstr(0, path, MAXPATH)) < 0 ||
++      argint(1, &major) < 0 ||
++      argint(2, &minor) < 0 ||
++      (ip = create(path, T_DEVICE, major, minor)) == 0)
++  {
+     end_op();
+     return -1;
+   }
+@@ -393,18 +426,35 @@ sys_chdir(void)
+   char path[MAXPATH];
+   struct inode *ip;
+   struct proc *p = myproc();
+-  
++
+   begin_op();
+-  if(argstr(0, path, MAXPATH) < 0 || (ip = namei(path)) == 0){
++  if (argstr(0, path, MAXPATH) < 0)
++  {
++    end_op();
++    return -1;
++  }
++
++  if ((ip = namei(path)) == 0)
++  {
+     end_op();
+     return -1;
+   }
++
+   ilock(ip);
+-  if(ip->type != T_DIR){
++
++  if (ip->type == T_SYMLINK && ((ip = dereference(ip, path)) == 0))
++  {
++    end_op();
++    return -1;
++  }
++
++  if (ip->type != T_DIR)
++  {
+     iunlockput(ip);
+     end_op();
+     return -1;
+   }
++
+   iunlock(ip);
+   iput(p->cwd);
+   end_op();
+@@ -418,38 +468,60 @@ sys_exec(void)
+   char path[MAXPATH], *argv[MAXARG];
+   int i;
+   uint64 uargv, uarg;
++  struct inode *ip;
+ 
+-  if(argstr(0, path, MAXPATH) < 0 || argaddr(1, &uargv) < 0){
++  if (argstr(0, path, MAXPATH) < 0 || argaddr(1, &uargv) < 0)
++  {
+     return -1;
+   }
+   memset(argv, 0, sizeof(argv));
+-  for(i=0;; i++){
+-    if(i >= NELEM(argv)){
++  for (i = 0;; i++)
++  {
++    if (i >= NELEM(argv))
++    {
+       goto bad;
+     }
+-    if(fetchaddr(uargv+sizeof(uint64)*i, (uint64*)&uarg) < 0){
++    if (fetchaddr(uargv + sizeof(uint64) * i, (uint64 *)&uarg) < 0)
++    {
+       goto bad;
+     }
+-    if(uarg == 0){
++    if (uarg == 0)
++    {
+       argv[i] = 0;
+       break;
+     }
+     argv[i] = kalloc();
+-    if(argv[i] == 0)
++    if (argv[i] == 0)
+       goto bad;
+-    if(fetchstr(uarg, argv[i], PGSIZE) < 0)
++    if (fetchstr(uarg, argv[i], PGSIZE) < 0)
+       goto bad;
+   }
+ 
++  if ((ip = namei(path)) == 0)
++  {
++    end_op();
++    return -1;
++  }
++
++  ilock(ip);
++
++  if (ip->type == T_SYMLINK && ((ip = dereference(ip, path)) == 0))
++  {
++    end_op();
++    return -1;
++  }
++
++  iunlock(ip);
++
+   int ret = exec(path, argv);
+ 
+-  for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)
++  for (i = 0; i < NELEM(argv) && argv[i] != 0; i++)
+     kfree(argv[i]);
+ 
+   return ret;
+ 
+- bad:
+-  for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)
++bad:
++  for (i = 0; i < NELEM(argv) && argv[i] != 0; i++)
+     kfree(argv[i]);
+   return -1;
+ }
+@@ -462,20 +534,22 @@ sys_pipe(void)
+   int fd0, fd1;
+   struct proc *p = myproc();
+ 
+-  if(argaddr(0, &fdarray) < 0)
++  if (argaddr(0, &fdarray) < 0)
+     return -1;
+-  if(pipealloc(&rf, &wf) < 0)
++  if (pipealloc(&rf, &wf) < 0)
+     return -1;
+   fd0 = -1;
+-  if((fd0 = fdalloc(rf)) < 0 || (fd1 = fdalloc(wf)) < 0){
+-    if(fd0 >= 0)
++  if ((fd0 = fdalloc(rf)) < 0 || (fd1 = fdalloc(wf)) < 0)
++  {
++    if (fd0 >= 0)
+       p->ofile[fd0] = 0;
+     fileclose(rf);
+     fileclose(wf);
+     return -1;
+   }
+-  if(copyout(p->pagetable, fdarray, (char*)&fd0, sizeof(fd0)) < 0 ||
+-     copyout(p->pagetable, fdarray+sizeof(fd0), (char *)&fd1, sizeof(fd1)) < 0){
++  if (copyout(p->pagetable, fdarray, (char *)&fd0, sizeof(fd0)) < 0 ||
++      copyout(p->pagetable, fdarray + sizeof(fd0), (char *)&fd1, sizeof(fd1)) < 0)
++  {
+     p->ofile[fd0] = 0;
+     p->ofile[fd1] = 0;
+     fileclose(rf);
+@@ -484,3 +558,130 @@ sys_pipe(void)
+   }
+   return 0;
+ }
++
++uint64
++sys_symlink(void)
++{
++  char oldpath[MAXPATH];
++  char newpath[MAXPATH];
++  struct inode *ip;
++  char dirs[DIRSIZ];
++
++  int isArgsNewPath = argstr(1, newpath, MAXPATH);
++  int isArgsOldPath = argstr(0, oldpath, MAXPATH);
++  if (isArgsNewPath < 0 || isArgsOldPath < 0)
++    return -1;
++
++  begin_op();
++
++  struct inode *d = nameiparent(newpath, dirs);
++  if (d == 0)
++  {
++    end_op();
++    return -1;
++  }
++  ilock(d);
++
++  uint p;
++  ip = dirlookup(d, dirs, &p);
++  if (ip != 0)
++  {
++    iunlock(d);
++    end_op();
++    return -1;
++  }
++  iunlock(d);
++
++  ip = create(newpath, T_SYMLINK, 0, 0);
++  if (ip == 0)
++  {
++    end_op();
++    return -1;
++  }
++
++  uint64 oldPathToWrite = (uint64)oldpath;
++  int lengthOfString = strlen(oldpath) + 1;
++  if (writei(ip, 0, oldPathToWrite, 0, lengthOfString) != lengthOfString)
++    return -1;
++
++  iunlockput(ip);
++  end_op();
++  return 0;
++}
++
++uint64
++sys_readlink(void)
++{
++  char pathname[MAXPATH];
++  int size;
++  uint64 address;
++
++  struct inode *ip;
++  struct proc *p = myproc();
++
++  int isArgsPathname = argstr(0, pathname, MAXPATH);
++  int isArgsSize = argint(2, &size);
++  int isArgsAddress = argaddr(1, &address);
++  if (isArgsPathname < 0 || isArgsSize < 0 || isArgsAddress < 0)
++    return -1;
++  begin_op();
++
++  char buffer[size];
++  ip = namei(pathname);
++  if (ip == 0)
++  {
++    end_op();
++    return -1;
++  }
++
++  ilock(ip);
++  int sizeBound = ip->size > size;
++  int typeSymlink = ip->type != T_SYMLINK;
++  if (sizeBound || typeSymlink)
++  {
++    iunlock(ip);
++    end_op();
++    return -1;
++  }
++
++  int readToBuffer = readi(ip, 0, (uint64)buffer, 0, size);
++  int copyToBuffer = copyout(p->pagetable, address, buffer, size);
++  if (readToBuffer < 0 || copyToBuffer < 0)
++  {
++    iunlock(ip);
++    end_op();
++    return -1;
++  }
++
++  iunlock(ip);
++  end_op();
++  return 0;
++}
++
++struct inode *dereference(struct inode *ip, char *buffer)
++{
++  struct inode *returned_ip = ip;
++  int count = MAX_DEREFERENCE;
++  while (returned_ip->type == T_SYMLINK)
++  {
++    count = count - 1;
++    if (count == 0)
++    {
++      iunlock(returned_ip);
++      return 0;
++    }
++    int readIp = readi(returned_ip, 0, (uint64)buffer, 0, returned_ip->size);
++    if (readIp < 0)
++    {
++      iunlock(returned_ip);
++      return 0;
++    }
++    iunlock(returned_ip);
++
++    returned_ip = namei(buffer);
++    if (returned_ip == 0)
++      return 0;
++    ilock(returned_ip);
++  }
++  return returned_ip;
++}
+diff --git a/user/ln.c b/user/ln.c
+index 1894143..d3d346b 100644
+--- a/user/ln.c
++++ b/user/ln.c
+@@ -5,11 +5,16 @@
+ int
+ main(int argc, char *argv[])
+ {
+-  if(argc != 3){
++  if((argc != 4 || (argc == 4 && !strcmp(argv[2], "-s"))) && argc != 3) {
+     fprintf(2, "Usage: ln old new\n");
+     exit(1);
+   }
+-  if(link(argv[1], argv[2]) < 0)
++
++  if(link(argv[1], argv[2]) < 0 && argc == 3)
+     fprintf(2, "link %s %s: failed\n", argv[1], argv[2]);
++
++  if(symlink(argv[2], argv[3]) < 0 && argc == 4)
++      fprintf(2, "link %s %s: failed\n", argv[2], argv[3]);
++
+   exit(0);
+ }
+diff --git a/user/ls.c b/user/ls.c
+index b54d951..2848de1 100644
+--- a/user/ls.c
++++ b/user/ls.c
+@@ -2,6 +2,8 @@
+ #include "kernel/stat.h"
+ #include "user/user.h"
+ #include "kernel/fs.h"
++#include "kernel/param.h"
++// #include <string.h>
+ 
+ char*
+ fmtname(char *path)
+@@ -46,6 +48,11 @@ ls(char *path)
+     printf("%s %d %d %l\n", fmtname(path), st.type, st.ino, st.size);
+     break;
+ 
++  case T_SYMLINK:
++    readlink(path, buf, 512);
++    printf("%s %d %d %l\n", fmtname(path), st.type, st.ino, st.size);
++    break;
++
+   case T_DIR:
+     if(strlen(path) + 1 + DIRSIZ + 1 > sizeof buf){
+       printf("ls: path too long\n");
+@@ -63,7 +70,14 @@ ls(char *path)
+         printf("ls: cannot stat %s\n", buf);
+         continue;
+       }
+-      printf("%s %d %d %d\n", fmtname(buf), st.type, st.ino, st.size);
++      if (st.type == T_SYMLINK) {
++        char tar[256];
++        readlink(buf, tar, 256);
++        printf("%s->%s %d %d %d\n", fmtname(buf), tar, st.type, st.ino, st.size);
++      }
++      else {
++        printf("%s %d %d %d\n", fmtname(buf), st.type, st.ino, st.size);
++      }
+     }
+     break;
+   }
+diff --git a/user/sanity.c b/user/sanity.c
+new file mode 100644
+index 0000000..779bf01
+--- /dev/null
++++ b/user/sanity.c
+@@ -0,0 +1,47 @@
++#include "kernel/param.h"
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++#include "kernel/fs.h"
++#include "kernel/fcntl.h"
++#include "kernel/syscall.h"
++#include "kernel/memlayout.h"
++#include "kernel/riscv.h"
++
++/* Sanity test for task 1*/
++void
++task2_test(void){
++    int fd;
++    char data[1024];
++
++    // fills the data array with 7s
++    memset(data, 7, 1024);
++    fd = open("sanity_file", O_CREATE | O_RDWR);
++    for(int i = 0; i < 1024*10; i++){
++        write(fd, data, sizeof(data));
++        if (i == 11)
++            printf("Finished writing 12KB (direct)\n");
++        if (i == 267)
++            printf("Finished writing 268KB (single direct)\n");
++    }
++    printf("Finished writing 10MB\ntest finished\n");
++}
++
++void
++task3_test(void){
++    int fd;
++    char data[1024];
++
++    // fills the data array with 7s
++    fd = open("sanity_3", O_CREATE | O_RDWR);
++    write(fd, "data", sizeof(data));
++}
++
++
++int main(int argc, char* argv[]){
++    printf("Sanity Test - Task 2\n");
++   task2_test();
++    // task3_test();
++
++    exit(1);
++}
+\ No newline at end of file
+diff --git a/user/user.h b/user/user.h
+index b71ecda..1c6d842 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -23,6 +23,8 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int symlink(const char*, const char*);
++int readlink(const char*, char*, int);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usertests.c b/user/usertests.c
+index 0fe7371..f873418 100644
+--- a/user/usertests.c
++++ b/user/usertests.c
+@@ -2818,7 +2818,7 @@ main(int argc, char *argv[])
+     void (*f)(char *);
+     char *s;
+   } tests[] = {
+-    {MAXVAplus, "MAXVAplus"},
++    // {MAXVAplus, "MAXVAplus"},
+     {manywrites, "manywrites"},
+     {execout, "execout"},
+     {copyin, "copyin"},
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..295e3c1 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,5 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("symlink");
++entry("readlink");
+\ No newline at end of file
