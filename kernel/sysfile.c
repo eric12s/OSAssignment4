@@ -658,6 +658,7 @@ sys_readlink(void)
   return 0;
 }
 
+// TODO: Change
 struct inode *dereference(struct inode *ip, char *buffer)
 {
   struct inode *returned_ip = ip;
@@ -678,7 +679,7 @@ struct inode *dereference(struct inode *ip, char *buffer)
     }
     iunlock(returned_ip);
 
-    int returned_ip = namei(buffer);
+    returned_ip = namei(buffer);
     if (returned_ip == 0)
       return 0;
     ilock(returned_ip);
