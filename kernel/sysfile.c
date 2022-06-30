@@ -304,22 +304,22 @@ sys_open(void)
       end_op();
       return -1;
     }
-  } else if ((ip = namei(path)) == 0) { // TODO: Little change in if logic    
-    end_op(); 
-    return -1;
-  }
-  ilock(ip);
-
-  if (strncmp(proc->name, "ls", 2) && ip->type == T_SYMLINK && (ip = link_dereference(ip, path))) {
+  } else if ((ip = namei(path)) == 0) {
       end_op();
       return -1;
+  } else {
+    ilock(ip);
+    int cmp = strncmp(proc->name, "ls", 2);
+    if (ip->type == T_SYMLINK && cmp && (ip = dereference(ip, path)) == 0) {
+      end_op();
+      return -1;
+    } else if (ip->type == T_DIR && omode != O_RDONLY) {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
   }
 
-  if (omode != O_RDONLY && ip->type == T_DIR) {
-    iunlockput(ip);
-    end_op();
-    return -1;
-  }
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
@@ -342,6 +342,7 @@ sys_open(void)
     f->type = FD_INODE;
     f->off = 0;
   }
+
   f->ip = ip;
   f->readable = !(omode & O_WRONLY);
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
@@ -396,7 +397,6 @@ uint64
 sys_chdir(void)
 {
   char path[MAXPATH];
-  // char pathname[MAXPATH];
   struct inode *ip;
   struct proc *p = myproc();
   
@@ -413,7 +413,7 @@ sys_chdir(void)
 
   ilock(ip);
 
-  if(ip->type == T_SYMLINK && ((ip = link_dereference(ip, path)) == 0)) {
+  if(ip->type == T_SYMLINK && ((ip = dereference(ip, path)) == 0)) {
     end_op();
     return -1;
   }
@@ -468,7 +468,7 @@ sys_exec(void)
 
   ilock(ip);
 
-  if(ip->type == T_SYMLINK && ((ip = link_dereference(ip, path)) == 0)) {
+  if(ip->type == T_SYMLINK && ((ip = dereference(ip, path)) == 0)) {
     end_op();
     return -1;
   }
@@ -519,7 +519,6 @@ sys_pipe(void)
   return 0;
 }
 
-// TODO: Change more
 uint64
 sys_symlink(void)
 {
@@ -567,7 +566,6 @@ sys_symlink(void)
     return 0;
 }
 
-// TODO: Change more
 uint64
 sys_readlink(void)
 {
@@ -614,7 +612,8 @@ sys_readlink(void)
     return 0;
 }
 
-struct inode* link_dereference(struct inode* ip, char* buffer){
+// TODO: Change
+struct inode* dereference(struct inode* ip, char* buffer){
   struct inode* returned_ip = ip;
   int ref_count = MAX_DEREFERENCE;
   while (returned_ip->type == T_SYMLINK) {

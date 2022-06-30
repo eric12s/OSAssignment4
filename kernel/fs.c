@@ -390,7 +390,6 @@ bmap(struct inode *ip, uint bn)
   bn -= NDIRECT;
 
   if(bn < NINDIRECT){
-    // Load indirect block, allocating if necessary.
     if((addr = ip->addrs[NDIRECT]) == 0)
       ip->addrs[NDIRECT] = addr = balloc(ip->dev);
     bp = bread(ip->dev, addr);
@@ -403,15 +402,10 @@ bmap(struct inode *ip, uint bn)
     return addr;
   }
 
-  // bn -= NINDIRECT;
-  // if(bn < DINDIRECT){
-  if (bn -= NINDIRECT < DINDIRECT) { // TODO: Check if can write it like this shortcut
-    // Load double indirect block, allocating if necessary.
+  if (bn -= NINDIRECT < DINDIRECT) {
     addr = ip->addrs[NDIRECT + 1];
 
     if (addr == 0) {
-        // TODO: Check this change
-        // ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
         addr = balloc(ip->dev);
         ip->addrs[NDIRECT + 1] = addr;
     }
@@ -421,10 +415,9 @@ bmap(struct inode *ip, uint bn)
     addr = a[bn / NINDIRECT];
     
     if (addr == 0) {
-        // TODO: Check same change here too
         addr = balloc(ip->dev);
         a[bn / NINDIRECT] = addr;
-        log_write(bp);  //TODO: check if need
+        log_write(bp);
     }
 
     brelse(bp);
